@@ -7,6 +7,7 @@ from mmdet.models import DETECTORS
 from mmdet3d.models.detectors.mvx_two_stage import MVXTwoStageDetector
 from plugin.futr3d.models.utils.grid_mask import GridMask
 from plugin.futr3d.models.backbones.radar_encoder import build_radar_encoder
+from mmcv.runner import force_fp32, auto_fp16
 
 @DETECTORS.register_module()
 class FUTR3D(MVXTwoStageDetector):
@@ -43,24 +44,9 @@ class FUTR3D(MVXTwoStageDetector):
         self.use_LiDAR = use_LiDAR
         self.use_Cam = use_Cam
         self.use_Radar = use_Radar
+        self.fp16_enabled=False
         if self.use_Radar:
             self.radar_encoder = build_radar_encoder(radar_encoder)
-
-    def extract_pts_feat(self, pts):
-        """Extract features of points."""
-        if not self.with_pts_bbox:
-            return None
-        voxels, num_points, coors = self.voxelize(pts)
-        
-        voxel_features = self.pts_voxel_encoder(voxels, num_points, coors)
-        batch_size = coors[-1, 0] + 1
-        
-        x = self.pts_middle_encoder(voxel_features, coors, batch_size.item())
-        
-        x = self.pts_backbone(x)
-        if self.with_pts_neck:
-            x = self.pts_neck(x)
-        return x
 
     def extract_img_feat(self, img, img_metas):
         """Extract features of images."""
@@ -92,28 +78,22 @@ class FUTR3D(MVXTwoStageDetector):
             BN, C, H, W = img_feat.size()
             img_feats_reshaped.append(img_feat.view(B, int(BN / B), C, H, W))
         return img_feats_reshaped
-
-    def extract_feat(self, points, img, radar, img_metas):
+    
+    @auto_fp16(apply_to=('img', 'radar'))
+    def extract_feat(self, img, radar, img_metas):
         """Extract features from images and points."""
         if self.use_Cam:
             img_feats = self.extract_img_feat(img, img_metas)
         else:
             img_feats = None
-        
-        if self.use_LiDAR:
-            pts_feats = self.extract_pts_feat(points)
-        else:
-            pts_feats = None
-        
         if self.use_Radar:
             rad_feats = self.radar_encoder(radar)
         else:
             rad_feats = None
         
-        return (img_feats, pts_feats, rad_feats)
-
+        return (img_feats, rad_feats)
+    
     def forward_mdfs_train(self,
-                          pts_feats,
                           img_feats,
                           rad_feats,
                           gt_bboxes_3d,
@@ -134,13 +114,13 @@ class FUTR3D(MVXTwoStageDetector):
         Returns:
             dict: Losses of each branch.
         """
-        outs = self.pts_bbox_head(pts_feats, img_feats, rad_feats, img_metas)
+        outs = self.pts_bbox_head(img_feats, rad_feats, img_metas)
         loss_inputs = [gt_bboxes_3d, gt_labels_3d, outs]
         losses = self.pts_bbox_head.loss(*loss_inputs)
         return losses
-
+    
+    @auto_fp16(apply_to=('img', 'radar'))
     def forward_train(self,
-                      points=None,
                       img_metas=None,
                       gt_bboxes_3d=None,
                       gt_labels_3d=None,
@@ -176,29 +156,26 @@ class FUTR3D(MVXTwoStageDetector):
             dict: Losses of different branches.
         """
         
-        img_feats, pts_feats, rad_feats = self.extract_feat(points, img=img, radar=radar, img_metas=img_metas)
+        img_feats, rad_feats = self.extract_feat(img=img, radar=radar, img_metas=img_metas)
         losses = dict()
-        if self.use_LiDAR:
-            pts_feats = [feat.unsqueeze(dim=1) for feat in pts_feats]
-        losses_pts = self.forward_mdfs_train(pts_feats, img_feats, rad_feats, gt_bboxes_3d,
+        losses_pts = self.forward_mdfs_train(img_feats, rad_feats, gt_bboxes_3d,
                                             gt_labels_3d, img_metas,
                                             gt_bboxes_ignore)
         losses.update(losses_pts)
         return losses
 
-    def forward_test(self, img_metas, img=None, points=None, radar=None, **kwargs):
+    def forward_test(self, img_metas, img=None, radar=None, **kwargs):
         for var, name in [(img_metas, 'img_metas')]:
             if not isinstance(var, list):
                 raise TypeError('{} must be a list, but got {}'.format(
                     name, type(var)))
         img = [img] if img is None else img
-        points = [points] if points is None else points
         radar = [radar] if radar is None else radar
-        return self.simple_test(img_metas[0], img[0], points[0], radar[0], **kwargs)
+        return self.simple_test(img_metas[0], img[0], radar[0], **kwargs)
 
-    def simple_test_mdfs(self, pts_feats, img_feats, rad_feats, img_metas, rescale=False):
+    def simple_test_mdfs(self, img_feats, rad_feats, img_metas, rescale=False):
         """Test function of point cloud branch."""
-        outs = self.pts_bbox_head(pts_feats, img_feats, rad_feats, img_metas)
+        outs = self.pts_bbox_head(img_feats, rad_feats, img_metas)
         bbox_list = self.pts_bbox_head.get_bboxes(
             outs, img_metas, rescale=rescale)
         bbox_results = [
@@ -207,18 +184,15 @@ class FUTR3D(MVXTwoStageDetector):
         ]
         return bbox_results
     
-    def simple_test(self, img_metas, img=None, points=None, radar=None, rescale=False):
+    def simple_test(self, img_metas, img=None, radar=None, rescale=False):
         """Test function without augmentaiton."""
         #if isinstance(radar, list):
         #    radar = radar[0]
-        img_feats, pts_feats, rad_feats = self.extract_feat(
-            points=points, img=img, radar=radar, img_metas=img_metas)
-        if self.use_LiDAR:
-            pts_feats = [feat.unsqueeze(dim=1) for feat in pts_feats]
-
+        img_feats, rad_feats = self.extract_feat(
+            img=img, radar=radar, img_metas=img_metas)
         bbox_list = [dict() for i in range(len(img_metas))]
         bbox_pts = self.simple_test_mdfs(
-            pts_feats, img_feats, rad_feats, img_metas, rescale=rescale)
+            img_feats, rad_feats, img_metas, rescale=rescale)
         for result_dict, pts_bbox in zip(bbox_list, bbox_pts):
             result_dict['pts_bbox'] = pts_bbox
         return bbox_list

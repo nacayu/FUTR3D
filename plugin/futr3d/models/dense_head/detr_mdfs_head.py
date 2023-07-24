@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmcv.cnn import Linear, bias_init_with_prob, constant_init
-from mmcv.runner import force_fp32
+from mmcv.runner import force_fp32, auto_fp16
                         
 from mmdet.core import (multi_apply, build_assigner, build_sampler, 
                         multi_apply, reduce_mean)
@@ -51,10 +51,10 @@ class DeformableFUTR3DHead(DETRHead):
         
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.pc_range = self.bbox_coder.pc_range
+        self.fp16_enabled=False
 
         self.num_cls_fcs = num_cls_fcs - 1
-        super(DeformableFUTR3DHead, self).__init__(
-            *args, transformer=transformer, **kwargs)
+        super(DeformableFUTR3DHead, self).__init__(*args, transformer=transformer, **kwargs)
         self.code_weights = nn.Parameter(torch.tensor(
             self.code_weights, requires_grad=False), requires_grad=False)
 
@@ -96,6 +96,7 @@ class DeformableFUTR3DHead(DETRHead):
         if not self.as_two_stage:
             self.query_embedding = nn.Embedding(self.num_query,
                                                 self.embed_dims * 2)
+        
 
     def init_weights(self):
         """Initialize weights of the DeformDETR head."""
@@ -104,8 +105,9 @@ class DeformableFUTR3DHead(DETRHead):
             bias_init = bias_init_with_prob(0.01)
             for m in self.cls_branches:
                 nn.init.constant_(m[-1].bias, bias_init)
-
-    def forward(self, mlvl_pts_feats, mlvl_img_feats, rad_feats, img_metas):
+                
+    @auto_fp16(apply_to=('mlvl_img_feats', 'rad_feats'))
+    def forward(self, mlvl_img_feats, rad_feats, img_metas):
         """Forward function.
         Args:
             mlvl_feats (tuple[Tensor]): Features from the upstream
@@ -120,9 +122,8 @@ class DeformableFUTR3DHead(DETRHead):
                 Shape [nb_dec, bs, num_query, 9].
         """
         query_embeds = self.query_embedding.weight
-
+        
         hs, init_reference, inter_references = self.transformer(
-            mlvl_pts_feats,
             mlvl_img_feats,
             rad_feats,
             query_embeds,
@@ -427,7 +428,8 @@ class DeformableFUTR3DHead(DETRHead):
             loss_dict[f'd{num_dec_layer}.loss_bbox'] = loss_bbox_i
             num_dec_layer += 1
         return loss_dict
-
+    
+    @force_fp32(apply_to=('preds_dicts'))
     def get_bboxes(self, preds_dicts, img_metas, rescale=False):
         """Generate bboxes from bbox head predictions.
         Args:

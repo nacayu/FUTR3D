@@ -30,7 +30,6 @@ class RFELayer(nn.Module):
         self.norm = build_norm_layer(norm_cfg, out_channels)[1]
         self.linear = nn.Linear(in_channels, out_channels, bias=False)
 
-    @auto_fp16(apply_to=('inputs'), out_fp32=True)
     def forward(self, inputs):
         """Forward function.
         Args:
@@ -68,9 +67,10 @@ class RadarPointEncoder(nn.Module):
             layer = RFELayer(in_chn, out_chn)
             layers.append(layer)
             in_chn = out_chn
-        
         self.feat_layers = nn.Sequential(*layers)
-        
+        self.fp16_enabled = False
+    
+    @auto_fp16(apply_to=('points'))
     def forward(self, points):
         '''
         points: [B, N, C]. N: as max

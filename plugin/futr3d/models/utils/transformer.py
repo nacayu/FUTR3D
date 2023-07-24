@@ -18,6 +18,7 @@ from torch.nn.init import normal_
 
 from mmdet.models.utils.builder import TRANSFORMER
 from mmdet.models.utils import Transformer
+from mmcv.runner import auto_fp16
 
 
 def inverse_sigmoid(x, eps=1e-5):
@@ -61,6 +62,7 @@ class FUTR3DTransformer(BaseModule):
         self.two_stage_num_proposals = two_stage_num_proposals
         self.reference_points_aug = reference_points_aug
         self.init_layers()
+        self.fp16_enabled = False
 
     def init_layers(self):
         """Initialize layers of the DeformableDetrTransformer."""
@@ -76,8 +78,8 @@ class FUTR3DTransformer(BaseModule):
                 m.init_weight()
         xavier_init(self.reference_points, distribution='uniform', bias=0.)
 
+    @auto_fp16(apply_to=('mlvl_img_feats', 'rad_feats', 'query_embed'))
     def forward(self,
-                mlvl_pts_feats,
                 mlvl_img_feats,
                 rad_feats,
                 query_embed,
@@ -126,10 +128,7 @@ class FUTR3DTransformer(BaseModule):
                     otherwise None.
         """
         assert query_embed is not None
-        if mlvl_pts_feats:
-            bs = mlvl_pts_feats[0].size(0)
-        else:
-            bs = mlvl_img_feats[0].size(0)
+        bs = mlvl_img_feats[0].size(0)
         query_pos, query = torch.split(query_embed, self.embed_dims , dim=1)
         query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)
         query = query.unsqueeze(0).expand(bs, -1, -1)
@@ -147,7 +146,6 @@ class FUTR3DTransformer(BaseModule):
         inter_states, inter_references = self.decoder(
             query=query,
             key=None,
-            pts_feats=mlvl_pts_feats,
             img_feats=mlvl_img_feats,
             rad_feats=rad_feats, 
             query_pos=query_pos,
@@ -174,7 +172,9 @@ class FUTR3DTransformerDecoder(TransformerLayerSequence):
 
         super(FUTR3DTransformerDecoder, self).__init__(*args, **kwargs)
         self.return_intermediate = return_intermediate
-        
+        self.fp16_enabled = False
+
+    @auto_fp16()
     def forward(self,
                 query,
                 *args,

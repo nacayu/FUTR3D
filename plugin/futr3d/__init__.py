@@ -12,4 +12,3 @@ from .datasets.loading import LoadReducedPointsFromFile, LoadReducedPointsFromMu
 from .datasets.nuscenes_radar import NuScenesDatasetRadar
 from .datasets.transform_3d import UnifiedObjectSample, PadMultiViewImage, PhotoMetricDistortionMultiViewImage, NormalizeMultiviewImage
 from .datasets.dbsampler import UnifiedDataBaseSampler
-from .models.necks.fpn import FPNV2

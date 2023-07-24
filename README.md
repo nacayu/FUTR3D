@@ -9,8 +9,39 @@ We built our implementation upon MMdetection3D. The major part of the code is in
 <li> mmcv-full>=1.3.8, <=1.4.0 </li>
 <li> mmdet>=2.14.0, <=3.0.0</li>
 <li> mmseg>=0.14.1, <=1.0.0</li>
+<li> mmdetection3d, >=v0.17.0</li>
 <li> nuscenes-devkit</li>
 </ol>
+
+### Recommended 
+
+
+- mmcv-full                            1.4.0
+- mmdet                                2.14.0
+- mmdet3d                              0.17.1
+- mmsegmentation                       0.14.1
+
+### Enviroment config
+
+```shell
+conda create -n open-mmlab python=3.8 -y
+conda activate open-mmlab
+
+pip install torch==1.9.1+cu111 torchvision==0.10.1+cu111 torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html
+
+pip install mmcv-full==1.4.0
+
+pip install mmdet==2.14.0
+pip install mmsegmentation==0.14.1
+
+git clone https://github.com/open-mmlab/mmdetection3d.git
+cd mmdetection3d
+git checkout v0.17.1 # Other versions may not be compatible.
+pip install -e .
+
+
+git clone https://github.com/nacayu/FUTR3D
+```
 
 ### Data
 
@@ -24,22 +55,11 @@ For others, please follow the mmdet3d to process the data. https://mmdetection3d
 
 ## Train
 
-For example, to train FUTR3D with LiDAR only on 8 GPUs, please use
+For example, to train FUTR3D with LiDAR only on 2 GPUs, please use
 
 ```
-bash tools/dist_train.sh plugin/futr3d/configs/lidar_only/01voxel_q6_step_38e.py 8
+bash tools/dist_train.sh plugin/futr3d/configs/cam_radar/res101_radar_900q_24e.py 2
 ```
-
-For LiDAR-Cam and Cam-Radar version, we need pre-trained model. 
-
-The Cam-Radar uses DETR3D model as pre-trained model, please check [DETR3D](https://github.com/WangYueFt/detr3d).
-
-The LiDAR-Cam uses fused LiDAR-only and Cam-only model as pre-trained model. You can use
-
-```
-python tools/fuse_model.py --img <cam checkpoint path> --lidar <lidar checkpoint path> --out <out model path>
-```
-to fuse cam-only and lidar-only models.
 
 ## Evaluate
 
