@@ -245,8 +245,9 @@ class FUTR3DCrossAtten(BaseModule):
             mask = torch.nan_to_num(mask)
 
             img_attention_weights = self.weight_dropout(img_attention_weights.sigmoid()) * mask
+            # multiply attention_weights with image sampling query features
             img_output = img_output * img_attention_weights
-            # output (B, emb_dims, num_query)
+            # sum all features for each query: output (B, emb_dims, num_query)
             img_output = img_output.sum(-1).sum(-1).sum(-1)
             # output (num_query, B, emb_dims)
             img_output = img_output.permute(2, 0, 1)
@@ -270,13 +271,16 @@ class FUTR3DCrossAtten(BaseModule):
         
         if self.use_Radar:
             radar_feats, radar_mask = rad_feats[:, :, :-1], rad_feats[:, :, -1]
+            # sampling in (x, y)
             radar_xy = radar_feats[:, :, :2]
             ref_xy = reference_points[:, :, :2]
             radar_feats = radar_feats[:, :, 2:]
             pad_xy = torch.ones_like(radar_xy) * 1000.0
             radar_xy = radar_xy + (1.0 - radar_mask.unsqueeze(dim=-1).type(torch.float)) * (pad_xy)
+            # caculate dist from query to radar points feature
             # [B, num_query, M]
             ref_radar_dist = -1.0 * torch.cdist(ref_xy, radar_xy)
+            # get topk points clear to query
             # [B, num_query, topk]
             _value, indices = torch.topk(ref_radar_dist, self.radar_topk)
             # [B, num_query, M]
@@ -292,7 +296,7 @@ class FUTR3DCrossAtten(BaseModule):
             # [B, num_query, topk, radar_dim]
             radar_feats_topk = torch.gather(
                 radar_feats, dim=2, index=indices_pad, sparse_grad=False)
-        
+            # weights
             radar_attention_weights = self.radar_attention_weights(query).view(
                 bs, num_query, self.radar_topk)
 
@@ -308,6 +312,7 @@ class FUTR3DCrossAtten(BaseModule):
         
             radar_out = self.radar_output_proj(radar_out)
 
+        # get fused feature
         if self.use_Cam and self.use_LiDAR:
             output = torch.cat((img_output, pts_output), dim=2).permute(1, 0, 2)
             output = self.modality_fusion_layer(output).permute(1, 0, 2)
@@ -319,6 +324,8 @@ class FUTR3DCrossAtten(BaseModule):
         elif self.use_LiDAR:
             output = pts_output
         reference_points_3d = reference_points.clone()
+        
+        # forward to next layer
         # (num_query, bs, embed_dims)
         return self.dropout(output) + inp_residual + self.pos_encoder(inverse_sigmoid(reference_points_3d)).permute(1, 0, 2)
 
@@ -329,8 +336,9 @@ def feature_sampling(mlvl_feats, reference_points, pc_range, img_metas):
         lidar2img.append(img_meta['lidar2img'])
     lidar2img = np.asarray(lidar2img)
     reference_points = reference_points.clone()
-    lidar2img = reference_points.new_tensor(lidar2img) # (B, N, 4, 4)
+    lidar2img = reference_points.new_tensor(lidar2img) # (B, N, 4, 4), copy transformation matrix to tensor
     reference_points_3d = reference_points.clone()
+    # project back reference points [0, 1] to real world coordinate using pc_range
     reference_points[..., 0:1] = reference_points[..., 0:1]*(pc_range[3] - pc_range[0]) + pc_range[0]
     reference_points[..., 1:2] = reference_points[..., 1:2]*(pc_range[4] - pc_range[1]) + pc_range[1]
     reference_points[..., 2:3] = reference_points[..., 2:3]*(pc_range[5] - pc_range[2]) + pc_range[2]
@@ -344,17 +352,19 @@ def feature_sampling(mlvl_feats, reference_points, pc_range, img_metas):
     reference_points = reference_points.view(B, 1, num_query, 4).repeat(1, num_cam, 1, 1).unsqueeze(-1)
     # lidar2img chaneg to (B, num_cam, num_query, 4, 4)
     lidar2img = lidar2img.view(B, num_cam, 1, 4, 4).repeat(1, 1, num_query, 1, 1)
-    # ref_point_cam change to (B, num_cam, num_query, 4)
+    # ref_point_cam change to (B, num_cam, num_query, 4), transform from 3D coordinated(in lidar) to camera coordinates
     reference_points_cam = torch.matmul(lidar2img, reference_points).squeeze(-1)
     eps = 1e-5
     mask = (reference_points_cam[..., 2:3] > eps)
-    # ref_point_cam change to img coordinates
+    # ref_point_cam(x, y, z) change to img coordinates(u, v)
     reference_points_cam = reference_points_cam[..., 0:2] / torch.maximum(
         reference_points_cam[..., 2:3], torch.ones_like(reference_points_cam[..., 2:3])*eps)
     # img_metas['img_shape']=[900, 1600]
+    # scaled to [-1, 1] for following F.grid_sample
     reference_points_cam[..., 0] /= img_metas[0]['img_shape'][0][1]
     reference_points_cam[..., 1] /= img_metas[0]['img_shape'][0][0]
     reference_points_cam = (reference_points_cam - 0.5) * 2
+    # mask pixel coordinates outside the image
     mask = (mask & (reference_points_cam[..., 0:1] > -1.0)
                  & (reference_points_cam[..., 0:1] < 1.0)
                  & (reference_points_cam[..., 1:2] > -1.0) 

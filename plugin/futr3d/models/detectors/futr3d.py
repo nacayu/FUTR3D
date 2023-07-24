@@ -155,7 +155,7 @@ class FUTR3D(MVXTwoStageDetector):
         Returns:
             dict: Losses of different branches.
         """
-        
+        # [L(num of FPN outputs) * [bs, N(num of cameras), c, h, w]], [bs, num of queries, c]
         img_feats, rad_feats = self.extract_feat(img=img, radar=radar, img_metas=img_metas)
         losses = dict()
         losses_pts = self.forward_mdfs_train(img_feats, rad_feats, gt_bboxes_3d,

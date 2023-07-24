@@ -5,6 +5,7 @@ import argparse
 import copy
 import mmcv
 import os
+import sys
 import time
 import torch
 import warnings
@@ -23,9 +24,11 @@ from mmdet.apis import set_random_seed
 from mmseg import __version__ as mmseg_version
 
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a detector')
-    parser.add_argument('config', help='train config file path')
+    # change here for debug small or big model config
+    parser.add_argument('--config', default='plugin/futr3d/configs/cam_radar/res101_radar_small.py',  help='train config file path')
     parser.add_argument('--work-dir', help='the dir to save logs and models')
     parser.add_argument(
         '--resume-from', help='the checkpoint file to resume from')
@@ -93,6 +96,9 @@ def parse_args():
 
 
 def main():
+    # config for debug
+    sys.path.append('/home/naca/Projects/00_class_project/futr3d')
+    
     args = parse_args()
 
     cfg = Config.fromfile(args.config)

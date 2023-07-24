@@ -39,7 +39,6 @@ class RFELayer(nn.Module):
         Returns:
             the same shape
         """
-        
         x = self.linear(inputs) # [B, M, C]
         # BMC -> BCM -> BMC
         x = self.norm(x.permute(0, 2, 1).contiguous()).permute(0, 2,
@@ -77,7 +76,7 @@ class RadarPointEncoder(nn.Module):
         masks: [B, N, 1]
         ret: 
             out: [B, N, C+1], last channel as 0-1 mask
-        '''
+        ''' 
         masks = points[:, :, [-1]]
         x = points[:, :, :-1]
         xy = points[:, :, :2]

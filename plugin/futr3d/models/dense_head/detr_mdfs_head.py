@@ -121,8 +121,9 @@ class DeformableFUTR3DHead(DETRHead):
                 head with normalized coordinate format (cx, cy, w, l, cz, h, theta, vx, vy). \
                 Shape [nb_dec, bs, num_query, 9].
         """
-        query_embeds = self.query_embedding.weight
+        query_embeds = self.query_embedding.weight  # [num of queries, 2 * c]
         
+        # intermediate_query_features, init_reference_points, intermediate_reference_points
         hs, init_reference, inter_references = self.transformer(
             mlvl_img_feats,
             rad_feats,
@@ -130,7 +131,10 @@ class DeformableFUTR3DHead(DETRHead):
             reg_branches=self.reg_branches if self.with_box_refine else None,  # noqa:E501
             img_metas=img_metas,
         )
+        # [bs, num_layers, num_query, c]
         hs = hs.permute(0, 2, 1, 3)
+        
+        # collect multi-transformer-layer outputs
         outputs_classes = []
         outputs_coords = []
 
@@ -140,20 +144,23 @@ class DeformableFUTR3DHead(DETRHead):
             else:
                 reference = inter_references[lvl - 1]
             reference = inverse_sigmoid(reference)
+            # class prediction and offset prediction
             outputs_class = self.cls_branches[lvl](hs[lvl])
             tmp = self.reg_branches[lvl](hs[lvl])
 
-            # TODO: check the shape of reference
+            # refine reference points by adding offset-tmp
             assert reference.shape[-1] == 3
+            # tmp,: [x, y, w, z, h, l, ...]
             tmp[..., 0:2] += reference[..., 0:2]
             tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
             tmp[..., 4:5] += reference[..., 2:3]
             tmp[..., 4:5] = tmp[..., 4:5].sigmoid()
+            # from scaled [0, 1] to real world position inside pc_range 
             tmp[..., 0:1] = (tmp[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
             tmp[..., 1:2] = (tmp[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
             tmp[..., 4:5] = (tmp[..., 4:5] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
             
-            # TODO: check if using sigmoid
+            # current layer prediction
             outputs_coord = tmp
             outputs_classes.append(outputs_class)
             outputs_coords.append(outputs_coord)
@@ -207,7 +214,7 @@ class DeformableFUTR3DHead(DETRHead):
         pos_inds = sampling_result.pos_inds
         neg_inds = sampling_result.neg_inds
 
-        # label targets
+        # label targets: [num_boxes:10]
         labels = gt_bboxes.new_full((num_bboxes, ),
                                     self.num_classes,
                                     dtype=torch.long)
@@ -217,6 +224,7 @@ class DeformableFUTR3DHead(DETRHead):
         # bbox targets
         bbox_targets = torch.zeros_like(bbox_pred)[..., :self.code_size-1]
         bbox_weights = torch.zeros_like(bbox_pred)
+        # only pos_inds bbox_weights == 1
         bbox_weights[pos_inds] = 1.0
 
         # DETR
@@ -265,7 +273,7 @@ class DeformableFUTR3DHead(DETRHead):
         gt_bboxes_ignore_list = [
             gt_bboxes_ignore_list for _ in range(num_imgs)
         ]
-
+        # final single loss
         (labels_list, label_weights_list, bbox_targets_list,
          bbox_weights_list, pos_inds_list, neg_inds_list) = multi_apply(
              self._get_target_single, cls_scores_list, bbox_preds_list,
@@ -300,12 +308,15 @@ class DeformableFUTR3DHead(DETRHead):
                 a single decoder layer.
         """
         num_imgs = cls_scores.size(0)
+        # for batch images
         cls_scores_list = [cls_scores[i] for i in range(num_imgs)]
         bbox_preds_list = [bbox_preds[i] for i in range(num_imgs)]
+        # get loss of each batch
         cls_reg_targets = self.get_targets(cls_scores_list, bbox_preds_list,
                                            gt_bboxes_list, gt_labels_list, gt_bboxes_ignore_list)
         (labels_list, label_weights_list, bbox_targets_list, bbox_weights_list,
          num_total_pos, num_total_neg) = cls_reg_targets
+        # concate all batch labels and bbox_targets
         labels = torch.cat(labels_list, 0)
         label_weights = torch.cat(label_weights_list, 0)
         bbox_targets = torch.cat(bbox_targets_list, 0)
@@ -320,6 +331,7 @@ class DeformableFUTR3DHead(DETRHead):
             cls_avg_factor = reduce_mean(
                 cls_scores.new_tensor([cls_avg_factor]))
 
+        # all query 
         cls_avg_factor = max(cls_avg_factor, 1)
         loss_cls = self.loss_cls(
             cls_scores, labels, label_weights, avg_factor=cls_avg_factor)
@@ -331,10 +343,12 @@ class DeformableFUTR3DHead(DETRHead):
 
         # regression L1 loss
         bbox_preds = bbox_preds.reshape(-1, bbox_preds.size(-1))
+        # normalize bbox targets
         normalized_bbox_targets = normalize_bbox(bbox_targets, self.pc_range)
         isnotnan = torch.isfinite(normalized_bbox_targets).all(dim=-1)
+        # only foreground object with 1.0
         bbox_weights = bbox_weights * self.code_weights
-
+        # only consider foreground bbox_preds
         loss_bbox = self.loss_bbox(
                 bbox_preds[isnotnan, :self.code_size], 
                 normalized_bbox_targets[isnotnan, :self.code_size], 
@@ -383,21 +397,26 @@ class DeformableFUTR3DHead(DETRHead):
 
         all_cls_scores = preds_dicts['all_cls_scores']
         all_bbox_preds = preds_dicts['all_bbox_preds']
+        # enc_*: None
         enc_cls_scores = preds_dicts['enc_cls_scores']
         enc_bbox_preds = preds_dicts['enc_bbox_preds']
 
         num_dec_layers = len(all_cls_scores)
         device = gt_labels_list[0].device
+        
+        # batch gt_bboxes_list
         gt_bboxes_list = [torch.cat(
             (gt_bboxes.gravity_center, gt_bboxes.tensor[:, 3:]),
             dim=1).to(device) for gt_bboxes in gt_bboxes_list]
-
+        
+        # duplicate to multi-layer
         all_gt_bboxes_list = [gt_bboxes_list for _ in range(num_dec_layers)]
         all_gt_labels_list = [gt_labels_list for _ in range(num_dec_layers)]
         all_gt_bboxes_ignore_list = [
             gt_bboxes_ignore for _ in range(num_dec_layers)
         ]
-
+        
+        # get multi-layer loss
         losses_cls, losses_bbox = multi_apply(
             self.loss_single, all_cls_scores, all_bbox_preds,
             all_gt_bboxes_list, all_gt_labels_list, 

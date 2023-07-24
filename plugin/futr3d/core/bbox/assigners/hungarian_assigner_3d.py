@@ -112,6 +112,7 @@ class HungarianAssigner3D(BaseAssigner):
             reg_cost = self.reg_cost(bbox_pred[:, :8], normalized_gt_bboxes[:, :8])
         else:
             reg_cost = self.reg_cost(bbox_pred, normalized_gt_bboxes)
+            
         # weighted sum of above two costs
         cost = cls_cost + reg_cost
         

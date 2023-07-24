@@ -22,8 +22,8 @@ import time
 def parse_args():
     parser = argparse.ArgumentParser(
         description='MMDet test (and eval) a model')
-    parser.add_argument('config', help='test config file path')
-    parser.add_argument('checkpoint', help='checkpoint file')
+    parser.add_argument('--config', default='plugin/futr3d/configs/cam_radar/res101_radar_large.py', help='test config file path')
+    parser.add_argument('--checkpoint', default='ckpts/cam_res101_radar_900q.pth', help='checkpoint file')
     parser.add_argument('--out', help='output result file in pickle format')
     parser.add_argument(
         '--fuse-conv-bn',
@@ -102,6 +102,7 @@ def parse_args():
 
 
 def main():
+    sys.path.append('/home/naca/Projects/00_class_project/futr3d')
     args = parse_args()
     
     assert args.out or args.eval or args.format_only or args.show \

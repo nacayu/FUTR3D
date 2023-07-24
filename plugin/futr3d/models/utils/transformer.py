@@ -129,20 +129,23 @@ class FUTR3DTransformer(BaseModule):
         """
         assert query_embed is not None
         bs = mlvl_img_feats[0].size(0)
-        query_pos, query = torch.split(query_embed, self.embed_dims , dim=1)
-        query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)
-        query = query.unsqueeze(0).expand(bs, -1, -1)
-        reference_points = self.reference_points(query_pos)
+        query_pos, query = torch.split(query_embed, self.embed_dims , dim=1)    # split query_embed to query and query_pos
+        # query is identical for all batches
+        query_pos = query_pos.unsqueeze(0).expand(bs, -1, -1)   # [bs, num_queries, c]
+        query = query.unsqueeze(0).expand(bs, -1, -1)           # [bs, num_queries, c]
+        # predict initial_reference_points from query_pos
+        reference_points = self.reference_points(query_pos)     # [bs, num_queries, 3]
         if self.training and self.reference_points_aug:
             reference_points = reference_points + torch.randn_like(reference_points) 
-        reference_points = reference_points.sigmoid()
+        reference_points = reference_points.sigmoid()           # scaled to [0, 1]
         init_reference_out = reference_points
 
         # decoder
-        query = query.permute(1, 0, 2)
+        query = query.permute(1, 0, 2)                          # [num_queries, bs, c]
     
         query_pos = query_pos.permute(1, 0, 2)
-       
+        
+        # ('self_attn', 'norm', 'cross_attn', 'norm', 'ffn', 'norm')
         inter_states, inter_references = self.decoder(
             query=query,
             key=None,
@@ -206,15 +209,15 @@ class FUTR3DTransformerDecoder(TransformerLayerSequence):
         intermediate_reference_points = []
         for lid, layer in enumerate(self.layers):
             reference_points_input = reference_points
-
-            # add point cloud features here
+            # add point cloud features here, output.shape:[num_queries, bs, c]
+            #  ('self_attn', 'norm', 'cross_attn', 'norm', 'ffn', 'norm')
             output = layer(
                 output,
                 *args,
                 reference_points=reference_points_input,
                 **kwargs)
-            output = output.permute(1, 0, 2)
-
+            output = output.permute(1, 0, 2)    # reshape back
+            # intermediate reference points
             if reg_branches is not None:
                 tmp = reg_branches[lid](output)
                 

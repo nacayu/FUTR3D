@@ -41,6 +41,7 @@ def create_nuscenes_infos(root_path,
     from nuscenes.utils import splits
     available_vers = ['v1.0-trainval', 'v1.0-test', 'v1.0-mini']
     assert version in available_vers
+    # get version scene index split
     if version == 'v1.0-trainval':
         train_scenes = splits.train
         val_scenes = splits.val
@@ -56,6 +57,7 @@ def create_nuscenes_infos(root_path,
     # filter existing scenes.
     available_scenes = get_available_scenes(nusc)
     available_scene_names = [s['name'] for s in available_scenes]
+    # get final scenes index
     train_scenes = list(
         filter(lambda x: x in available_scene_names, train_scenes))
     val_scenes = list(filter(lambda x: x in available_scene_names, val_scenes))
@@ -74,10 +76,12 @@ def create_nuscenes_infos(root_path,
     else:
         print('train scene: {}, val scene: {}'.format(
             len(train_scenes), len(val_scenes)))
+    # fill infos needed for save
     train_nusc_infos, val_nusc_infos = _fill_trainval_infos(
         nusc, train_scenes, val_scenes, test, max_sweeps=max_sweeps)
 
     metadata = dict(version=version)
+    # save metadata to .pkl
     if test:
         print('test sample: {}'.format(len(train_nusc_infos)))
         data = dict(infos=train_nusc_infos, metadata=metadata)
@@ -135,7 +139,7 @@ def get_available_scenes(nusc):
     return available_scenes
 
 
-def _fill_trainval_infos(nusc,
+def  _fill_trainval_infos(nusc,
                          train_scenes,
                          val_scenes,
                          test=False,
@@ -155,7 +159,9 @@ def _fill_trainval_infos(nusc,
     train_nusc_infos = []
     val_nusc_infos = []
 
+    # each sample has an info dictionary that stores all relevant information
     for sample in mmcv.track_iter_progress(nusc.sample):
+        # lidar-centered
         lidar_token = sample['data']['LIDAR_TOP']
         sd_rec = nusc.get('sample_data', sample['data']['LIDAR_TOP'])
         cs_record = nusc.get('calibrated_sensor',
@@ -164,7 +170,7 @@ def _fill_trainval_infos(nusc,
         lidar_path, boxes, _ = nusc.get_sample_data(lidar_token)
 
         mmcv.check_file_exist(lidar_path)
-
+        # all data from info are unique token can be searched from nusc.get(_, token)
         info = {
             'lidar_path': lidar_path,
             'token': sample['token'],
@@ -178,8 +184,10 @@ def _fill_trainval_infos(nusc,
             'timestamp': sample['timestamp'],
         }
 
+        # lidar->ego
         l2e_r = info['lidar2ego_rotation']
         l2e_t = info['lidar2ego_translation']
+        # ego->global
         e2g_r = info['ego2global_rotation']
         e2g_t = info['ego2global_translation']
         l2e_r_mat = Quaternion(l2e_r).rotation_matrix
@@ -194,9 +202,11 @@ def _fill_trainval_infos(nusc,
             'CAM_BACK_LEFT',
             'CAM_BACK_RIGHT',
         ]
+        # top: lidar
         for cam in camera_types:
             cam_token = sample['data'][cam]
             cam_path, _, cam_intrinsic = nusc.get_sample_data(cam_token)
+            # get camera to lidar matrix
             cam_info = obtain_sensor2top(nusc, cam_token, l2e_t, l2e_r_mat,
                                          e2g_t, e2g_r_mat, cam)
             cam_info.update(cam_intrinsic=cam_intrinsic)
@@ -210,9 +220,10 @@ def _fill_trainval_infos(nusc,
             sweeps = []
 
             while len(sweeps) < max_sweeps:
+                # first frame(w/o previous frame)
                 if not radar_rec['prev'] == '':
                     radar_path, _, radar_intrin = nusc.get_sample_data(radar_token)
-
+                    # radar to lidar transmation matrix
                     radar_info = obtain_sensor2top(nusc, radar_token, l2e_t, l2e_r_mat,
                                                 e2g_t, e2g_r_mat, radar_name)
                     sweeps.append(radar_info)
@@ -244,12 +255,15 @@ def _fill_trainval_infos(nusc,
                 nusc.get('sample_annotation', token)
                 for token in sample['anns']
             ]
+            # location(x, y, z), dims(height, width, length), rots(theta)
             locs = np.array([b.center for b in boxes]).reshape(-1, 3)
             dims = np.array([b.wlh for b in boxes]).reshape(-1, 3)
             rots = np.array([b.orientation.yaw_pitch_roll[0]
                              for b in boxes]).reshape(-1, 1)
+            # velocity: vx, vy
             velocity = np.array(
                 [nusc.box_velocity(token)[:2] for token in sample['anns']])
+            # annos w || w/o any points
             valid_flag = np.array(
                 [(anno['num_lidar_pts'] + anno['num_radar_pts']) > 0
                  for anno in annotations],
@@ -260,7 +274,7 @@ def _fill_trainval_infos(nusc,
                 velo = velo @ np.linalg.inv(e2g_r_mat).T @ np.linalg.inv(
                     l2e_r_mat).T
                 velocity[i] = velo[:2]
-
+            
             names = [b.name for b in boxes]
             for i in range(len(names)):
                 if names[i] in NuScenesDataset.NameMapping:
@@ -326,8 +340,10 @@ def obtain_sensor2top(nusc,
         'ego2global_rotation': pose_record['rotation'],
         'timestamp': sd_rec['timestamp']
     }
+    # sweep->ego
     l2e_r_s = sweep['sensor2ego_rotation']
     l2e_t_s = sweep['sensor2ego_translation']
+    # ego->global
     e2g_r_s = sweep['ego2global_rotation']
     e2g_t_s = sweep['ego2global_translation']
 
@@ -335,8 +351,10 @@ def obtain_sensor2top(nusc,
     # sweep->ego->global->ego'->lidar
     l2e_r_s_mat = Quaternion(l2e_r_s).rotation_matrix
     e2g_r_s_mat = Quaternion(e2g_r_s).rotation_matrix
+    # sweep->lidar rotation matrix
     R = (l2e_r_s_mat.T @ e2g_r_s_mat.T) @ (
         np.linalg.inv(e2g_r_mat).T @ np.linalg.inv(l2e_r_mat).T)
+    # sweep->lidar transmation matrix
     T = (l2e_t_s @ e2g_r_s_mat.T + e2g_t_s) @ (
         np.linalg.inv(e2g_r_mat).T @ np.linalg.inv(l2e_r_mat).T)
     T -= e2g_t @ (np.linalg.inv(e2g_r_mat).T @ np.linalg.inv(l2e_r_mat).T
